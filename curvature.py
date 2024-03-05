@@ -2,23 +2,20 @@
 # All Rights Reserved.
 
 import gc
-
 import math
 
 import numpy as np
-
 import torch
 from torch import nn
-
-from transformers import OPTForCausalLM
-from transformers import LlamaForCausalLM
-from transformers.models.opt.modeling_opt import OPTDecoderLayer
+from transformers import LlamaForCausalLM, OPTForCausalLM
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.opt.modeling_opt import OPTDecoderLayer
 
 EARLY_BUFFER = False
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+
 
 def get_mods(layer):
     mods = []
@@ -39,8 +36,9 @@ def get_mods(layer):
         mods.append(layer.mlp.down_proj)
     else:
         raise NotImplementedError(f"Unknown decoder layer: {type(layer)}")
-            
+
     return mods
+
 
 class Curvature:
     def __init__(self, model):
@@ -77,6 +75,7 @@ class Curvature:
         del self.curvature
         self.curvature = {}
 
+
 class Identity(Curvature):
     def __init__(self, model):
         super(Identity, self).__init__(model)
@@ -85,11 +84,11 @@ class Identity(Curvature):
         num_in_features = (mod.weight.shape[1] + 1) if mod.bias is not None else mod.weight.shape[1]
         num_out_features = mod.weight.shape[0]
 
-        return {'A_mat_0': torch.eye(num_in_features),
-                'G_mat_0': torch.eye(num_out_features)}
+        return {"A_mat_0": torch.eye(num_in_features), "G_mat_0": torch.eye(num_out_features)}
+
 
 class Activations(Curvature):
-    def __init__(self, model, train_dataloader, nsamples=128, dev='cuda', curvature_dev=None):
+    def __init__(self, model, train_dataloader, nsamples=128, dev="cuda", curvature_dev=None):
         super(Activations, self).__init__(model)
 
         model.eval()
@@ -118,15 +117,21 @@ class Activations(Curvature):
                         curvature[module]["G_mat_0"] = curvature[module]["G_mat_0"].to(device)
 
                     if module.bias is not None:
-                        inp_bias = torch.zeros((inp.shape[0], inp.shape[1] + 1), dtype=dtype, device=device)
+                        inp_bias = torch.zeros(
+                            (inp.shape[0], inp.shape[1] + 1), dtype=dtype, device=device
+                        )
                         inp_bias[:, :-1] = inp
                         inp_bias[:, -1] = 1.0
 
                         N_sqrt = math.sqrt(seqlen * nsamples)
-                        curvature[module]["A_mat_0"].copy_(torch.einsum('bi,bj->ij', inp_bias / N_sqrt, inp_bias / N_sqrt))
+                        curvature[module]["A_mat_0"].copy_(
+                            torch.einsum("bi,bj->ij", inp_bias / N_sqrt, inp_bias / N_sqrt)
+                        )
                     else:
                         N_sqrt = math.sqrt(seqlen * nsamples)
-                        curvature[module]["A_mat_0"].copy_(torch.einsum('bi,bj->ij', inp / N_sqrt, inp / N_sqrt))
+                        curvature[module]["A_mat_0"].copy_(
+                            torch.einsum("bi,bj->ij", inp / N_sqrt, inp / N_sqrt)
+                        )
             del inps
             del out
 
@@ -140,8 +145,10 @@ class Activations(Curvature):
             mod_out_features = mod.out_features
             mod_in_features = mod.in_features + (1 if mod.bias is not None else 0)
 
-            curvature[mod] = {"A_mat_0": torch.zeros((mod_in_features, mod_in_features), device=curvature_dev),
-                              "G_mat_0": torch.eye(mod_out_features, device=curvature_dev)}
+            curvature[mod] = {
+                "A_mat_0": torch.zeros((mod_in_features, mod_in_features), device=curvature_dev),
+                "G_mat_0": torch.eye(mod_out_features, device=curvature_dev),
+            }
 
             for name, param in mod.named_parameters():
                 param.requires_grad = True
@@ -150,12 +157,14 @@ class Activations(Curvature):
             h = mod.register_forward_hook(hook_fn_forward)
             hooks.append(h)
 
-        print(f'Passing {len(train_dataloader)} batches of data through model to estimate loss landscape (using activations only).')
+        print(
+            f"Passing {len(train_dataloader)} batches of data through model to estimate loss landscape (using activations only)."
+        )
         with torch.no_grad():
             for i, batch in enumerate(train_dataloader):
                 if i % 10 == 0:
                     print(f"Pass {i+1}/{len(train_dataloader)}")
-                
+
                 if len(batch.return_tensors[0]) == 2:
                     batch = torch.tensor(batch.return_tensors[0][0]).to(dev)
                 elif len(batch.return_tensors[0]) > 2:
@@ -165,14 +174,33 @@ class Activations(Curvature):
 
                 out = model(batch)
 
-        print('Done estimating loss landscape curvature.')
+        print("Done estimating loss landscape curvature.")
         self.curvature = curvature
 
         del train_dataloader
 
 
 class KFAC(Curvature):
-    def __init__(self, model, train_dataloader, fisher_samples, krank, use_iad=False, nsamples=128, kpca_iter=1, max_outgrad=0.0, dev='cuda', writer=None, shot_i=None, diagonal=False, buffer_dev=None, curvature_dev=None, save_curvature=0, double=False, reuse=None):
+    def __init__(
+        self,
+        model,
+        train_dataloader,
+        fisher_samples,
+        krank,
+        use_iad=False,
+        nsamples=128,
+        kpca_iter=1,
+        max_outgrad=0.0,
+        dev="cuda",
+        writer=None,
+        shot_i=None,
+        diagonal=False,
+        buffer_dev=None,
+        curvature_dev=None,
+        save_curvature=0,
+        double=False,
+        reuse=None,
+    ):
         super(KFAC, self).__init__(model)
 
         self.krank = krank
@@ -196,18 +224,20 @@ class KFAC(Curvature):
             if module in self.to_hook:
                 assert len(inps) == 1, f"Length of inputs is {len(inps)}, but should be 1"
                 for inp in inps:
-                    if EARLY_BUFFER: 
+                    if EARLY_BUFFER:
                         inp = inp.detach().to(buffer_dev).view(-1, inp.shape[-1])
                     else:
                         inp = inp.detach().view(-1, inp.shape[-1])
 
                     if double:
                         inp = inp.double()
-                    
+
                     if module.bias is not None:
                         dtype, device = inp.dtype, inp.device
 
-                        inp_bias = torch.zeros((inp.shape[0], inp.shape[1] + 1), dtype=dtype, device=device)
+                        inp_bias = torch.zeros(
+                            (inp.shape[0], inp.shape[1] + 1), dtype=dtype, device=device
+                        )
                         inp_bias[:, :-1] = inp
                         inp_bias[:, -1] = 1.0
                         if EARLY_BUFFER:
@@ -230,12 +260,12 @@ class KFAC(Curvature):
                 for outgrad in out_grad:
                     if max_outgrad > 0:
                         outgrad = torch.clamp(outgrad.detach(), -max_outgrad, max_outgrad)
-                        if EARLY_BUFFER: 
+                        if EARLY_BUFFER:
                             G = outgrad.detach().to(buffer_dev).view(-1, outgrad.shape[-1])
                         else:
                             G = outgrad.detach().view(-1, outgrad.shape[-1])
                     else:
-                        if EARLY_BUFFER: 
+                        if EARLY_BUFFER:
                             G = outgrad.detach().to(buffer_dev).view(-1, outgrad.shape[-1])
                         else:
                             G = outgrad.detach().view(-1, outgrad.shape[-1])
@@ -256,39 +286,53 @@ class KFAC(Curvature):
                         A_mini = A[:, :save_curvature]
 
                         N_root4 = math.sqrt(math.sqrt(seqlen * nsamples))
-                        F_mini = torch.sum(torch.einsum('bi,bj,bk,bl->bikjl', G_mini / N_root4, G_mini / N_root4, A_mini / N_root4, A_mini / N_root4), 0).reshape(save_curvature ** 2, save_curvature ** 2)
+                        F_mini = torch.sum(
+                            torch.einsum(
+                                "bi,bj,bk,bl->bikjl",
+                                G_mini / N_root4,
+                                G_mini / N_root4,
+                                A_mini / N_root4,
+                                A_mini / N_root4,
+                            ),
+                            0,
+                        ).reshape(save_curvature**2, save_curvature**2)
 
-                        curvature[module]['F_mini'].add_(F_mini.to(curvature_dev).float().cpu())
+                        curvature[module]["F_mini"].add_(F_mini.to(curvature_dev).float().cpu())
 
                     assert G.isfinite().all(), "G is not all finite!"
 
                     if diagonal and is_first:
                         N_sqrt = math.sqrt(seqlen * nsamples)
-                        G_diag = (G ** 2)
-                        A_diag = (A ** 2)
-                        D = torch.einsum('bi,bj->ij', G_diag, A_diag)
+                        G_diag = G**2
+                        A_diag = A**2
+                        D = torch.einsum("bi,bj->ij", G_diag, A_diag)
 
                         if buffer_dev is None:
-                            curv_buffer[module]["diagonal"] = curv_buffer[module]["diagonal"].to(D.device)
-                        
+                            curv_buffer[module]["diagonal"] = curv_buffer[module]["diagonal"].to(
+                                D.device
+                            )
+
                         curv_buffer[module]["diagonal"].add_(D.to(buffer_dev))
 
                     if use_iad:
                         assert G.isfinite().all(), f"G is not all finite!"
 
                         N_sqrt = math.sqrt(seqlen * nsamples)
-                        G_new = torch.einsum('bu,bv->uv', G / N_sqrt, G / N_sqrt)
-                        A_new = torch.einsum('bu,bv->uv', A / N_sqrt, A / N_sqrt)
-                    
+                        G_new = torch.einsum("bu,bv->uv", G / N_sqrt, G / N_sqrt)
+                        A_new = torch.einsum("bu,bv->uv", A / N_sqrt, A / N_sqrt)
+
                         assert G_new.isfinite().all(), f"G is not all finite!, {seqlen}, {nsamples}"
 
                         if buffer_dev is None:
-                            curv_buffer[module]["A_agg"] = curv_buffer[module]["A_agg"].to(A_new.device)
+                            curv_buffer[module]["A_agg"] = curv_buffer[module]["A_agg"].to(
+                                A_new.device
+                            )
 
                         curv_buffer[module]["A_agg"].add_(A_new.to(buffer_dev))
                         del A_new
 
                     else:
+
                         def mat(m):
                             size = int(math.sqrt(m.numel()))
                             return m.reshape(size, size)
@@ -296,17 +340,26 @@ class KFAC(Curvature):
                         A_vec = curv_buffer[module]["A_vec"].to(dev)
 
                         N_root4 = math.sqrt(math.sqrt(seqlen * nsamples))
-                        G_new = torch.einsum('bi,ij,bj,bu,bv->uv', A / N_root4, mat(A_vec), A / N_root4, G / N_root4, G / N_root4)
+                        G_new = torch.einsum(
+                            "bi,ij,bj,bu,bv->uv",
+                            A / N_root4,
+                            mat(A_vec),
+                            A / N_root4,
+                            G / N_root4,
+                            G / N_root4,
+                        )
 
                         assert G_new.isfinite().all(), "G is not all finite!"
 
                         for r in range(krank_i):
-                            s_res = torch.sum(curvature[module][f"A_mat_{r}"].to(dev) * A_vec / nsamples) * curvature[module][f"G_mat_{r}"].to(dev)
+                            s_res = torch.sum(
+                                curvature[module][f"A_mat_{r}"].to(dev) * A_vec / nsamples
+                            ) * curvature[module][f"G_mat_{r}"].to(dev)
 
                             G_new.sub_(s_res)
 
                         del A
-                        
+
                     if buffer_dev is None:
                         curv_buffer[module]["G_agg"] = curv_buffer[module]["G_agg"].to(G_new.device)
 
@@ -331,19 +384,19 @@ class KFAC(Curvature):
                 for outgrad in out_grad:
                     if max_outgrad > 0:
                         outgrad = torch.clamp(outgrad.detach(), -max_outgrad, max_outgrad)
-                        if EARLY_BUFFER: 
+                        if EARLY_BUFFER:
                             G = outgrad.detach().to(buffer_dev).view(-1, outgrad.shape[-1])
                         else:
                             G = outgrad.detach().view(-1, outgrad.shape[-1])
                     else:
-                        if EARLY_BUFFER: 
+                        if EARLY_BUFFER:
                             G = outgrad.detach().to(buffer_dev).view(-1, outgrad.shape[-1])
                         else:
                             G = outgrad.detach().view(-1, outgrad.shape[-1])
-                        
+
                     if double:
                         G = G.double()
-                    
+
                     G[G != G] = 0.0
 
                     seqlen = G.shape[0]
@@ -360,10 +413,19 @@ class KFAC(Curvature):
                     G_vec = curv_buffer[module]["G_vec"].to(dev)
 
                     N_root4 = math.sqrt(math.sqrt(seqlen * nsamples))
-                    A_new = torch.einsum('bi,ij,bj,bu,bv->uv', G / N_root4, mat(G_vec), G / N_root4, A / N_root4, A / N_root4) 
+                    A_new = torch.einsum(
+                        "bi,ij,bj,bu,bv->uv",
+                        G / N_root4,
+                        mat(G_vec),
+                        G / N_root4,
+                        A / N_root4,
+                        A / N_root4,
+                    )
 
                     for r in range(krank_i):
-                        a_res = torch.sum(curvature[module][f"G_mat_{r}"].to(dev) * G_vec / nsamples) * curvature[module][f"A_mat_{r}"].to(dev)
+                        a_res = torch.sum(
+                            curvature[module][f"G_mat_{r}"].to(dev) * G_vec / nsamples
+                        ) * curvature[module][f"A_mat_{r}"].to(dev)
 
                         A_new.sub_(a_res)
 
@@ -389,34 +451,48 @@ class KFAC(Curvature):
             mod_in_features = mod.in_features + (1 if mod.bias is not None else 0)
 
             if reuse is not None:
-                g_reuse = reuse.curvature[mod]['G_mat_0']
-                a_reuse = reuse.curvature[mod]['A_mat_0']
+                g_reuse = reuse.curvature[mod]["G_mat_0"]
+                a_reuse = reuse.curvature[mod]["A_mat_0"]
                 g_norm = torch.norm(g_reuse)
                 a_norm = torch.norm(a_reuse)
-                
-                curv_buffer[mod] = {'G_agg': torch.zeros((mod.out_features, mod.out_features), device=buffer_dev),
-                                    'A_agg': torch.zeros((mod_in_features, mod_in_features), device=buffer_dev),
-                                    'G_vec': g_reuse / g_norm,
-                                    'A_vec': a_reuse / a_norm, 
-                                    'eigval': g_norm * a_norm}
+
+                curv_buffer[mod] = {
+                    "G_agg": torch.zeros((mod.out_features, mod.out_features), device=buffer_dev),
+                    "A_agg": torch.zeros((mod_in_features, mod_in_features), device=buffer_dev),
+                    "G_vec": g_reuse / g_norm,
+                    "A_vec": a_reuse / a_norm,
+                    "eigval": g_norm * a_norm,
+                }
             else:
-                curv_buffer[mod] = {'G_agg': torch.zeros((mod.out_features, mod.out_features), device=buffer_dev),
-                                    'A_agg': torch.zeros((mod_in_features, mod_in_features), device=buffer_dev),
-                                    'G_vec': torch.ones((mod.out_features, mod.out_features), device=buffer_dev),
-                                    'A_vec': torch.ones((mod_in_features, mod_in_features), device=buffer_dev),
-                                    'eigval': 1.0}
+                curv_buffer[mod] = {
+                    "G_agg": torch.zeros((mod.out_features, mod.out_features), device=buffer_dev),
+                    "A_agg": torch.zeros((mod_in_features, mod_in_features), device=buffer_dev),
+                    "G_vec": torch.ones((mod.out_features, mod.out_features), device=buffer_dev),
+                    "A_vec": torch.ones((mod_in_features, mod_in_features), device=buffer_dev),
+                    "eigval": 1.0,
+                }
 
             curvature[mod] = {}
             for r in range(krank):
-                curvature[mod][f'G_mat_{r}'] = torch.zeros((mod.out_features, mod.out_features), device=curvature_dev)
-                curvature[mod][f'A_mat_{r}'] = torch.zeros((mod_in_features, mod_in_features), device=curvature_dev)
+                curvature[mod][f"G_mat_{r}"] = torch.zeros(
+                    (mod.out_features, mod.out_features), device=curvature_dev
+                )
+                curvature[mod][f"A_mat_{r}"] = torch.zeros(
+                    (mod_in_features, mod_in_features), device=curvature_dev
+                )
 
             if diagonal:
-                curv_buffer[mod]['diagonal'] = torch.zeros((mod.out_features, mod_in_features), device=buffer_dev)
-                curvature[mod][f'diagonal'] = torch.zeros((mod.out_features, mod_in_features), device=curvature_dev)
+                curv_buffer[mod]["diagonal"] = torch.zeros(
+                    (mod.out_features, mod_in_features), device=buffer_dev
+                )
+                curvature[mod][f"diagonal"] = torch.zeros(
+                    (mod.out_features, mod_in_features), device=curvature_dev
+                )
 
             if save_curvature:
-                curvature[mod][f'F_mini'] = torch.zeros((save_curvature ** 2, save_curvature ** 2), device='cpu')
+                curvature[mod][f"F_mini"] = torch.zeros(
+                    (save_curvature**2, save_curvature**2), device="cpu"
+                )
 
             for name, param in mod.named_parameters():
                 param.requires_grad = True
@@ -435,19 +511,21 @@ class KFAC(Curvature):
 
             for mod in curv_buffer.keys():
                 if reuse is not None:
-                    g_reuse = reuse.curvature[mod]['G_mat_0']
-                    a_reuse = reuse.curvature[mod]['A_mat_0']
+                    g_reuse = reuse.curvature[mod]["G_mat_0"]
+                    a_reuse = reuse.curvature[mod]["A_mat_0"]
                     g_norm = torch.norm(g_reuse)
                     a_norm = torch.norm(a_reuse)
-                    curv_buffer[mod]['G_vec'].copy_(g_reuse / g_norm)
-                    curv_buffer[mod]['A_vec'].copy_(a_reuse / a_norm)
+                    curv_buffer[mod]["G_vec"].copy_(g_reuse / g_norm)
+                    curv_buffer[mod]["A_vec"].copy_(a_reuse / a_norm)
                 else:
-                    curv_buffer[mod]['G_vec'].fill_(1.0)
-                    curv_buffer[mod]['A_vec'].fill_(1.0)
+                    curv_buffer[mod]["G_vec"].fill_(1.0)
+                    curv_buffer[mod]["A_vec"].fill_(1.0)
 
             for kpca_i in range(kpca_iter):
-                kfac_str = '[using KFAC for first rank]' if use_iad else ''
-                print(f'K-RANK: {krank_i + 1} of {krank}. Step: {kpca_i + 1} of {kpca_iter}. {kfac_str}')
+                kfac_str = "[using KFAC for first rank]" if use_iad else ""
+                print(
+                    f"K-RANK: {krank_i + 1} of {krank}. Step: {kpca_i + 1} of {kpca_iter}. {kfac_str}"
+                )
 
                 for hook in hooks:
                     hook.remove()
@@ -458,21 +536,31 @@ class KFAC(Curvature):
                     hooks.append(h)
 
                     if kpca_i % 2 == 0:
-                        h = mod.register_backward_hook(lambda arg1, arg2, arg3: hook_fn_backward_s(arg1, arg2, arg3, use_iad, krank_i=krank_i, is_first=is_first))
+                        h = mod.register_backward_hook(
+                            lambda arg1, arg2, arg3: hook_fn_backward_s(
+                                arg1, arg2, arg3, use_iad, krank_i=krank_i, is_first=is_first
+                            )
+                        )
                     else:
-                        h = mod.register_backward_hook(lambda arg1, arg2, arg3: hook_fn_backward_a(arg1, arg2, arg3, use_iad, krank_i=krank_i))
+                        h = mod.register_backward_hook(
+                            lambda arg1, arg2, arg3: hook_fn_backward_a(
+                                arg1, arg2, arg3, use_iad, krank_i=krank_i
+                            )
+                        )
 
                     hooks.append(h)
 
                     for name, param in mod.named_parameters():
                         param.requires_grad = True
 
-                print(f'Passing {len(train_dataloader)} batches of data through model to estimate loss landscape.')
+                print(
+                    f"Passing {len(train_dataloader)} batches of data through model to estimate loss landscape."
+                )
                 losses = 0.0
                 for i, batch in enumerate(train_dataloader):
                     if i % 10 == 0:
                         print(f"\tPass {i+1}/{len(train_dataloader)}")
-                    
+
                     if len(batch.return_tensors[0]) == 2:
                         batch = torch.tensor(batch.return_tensors[0][0]).to(dev)
                     elif len(batch.return_tensors[0]) > 2:
@@ -482,52 +570,66 @@ class KFAC(Curvature):
 
                     out = model(batch)
 
-                    logits = out['logits']
+                    logits = out["logits"]
 
                     loss = nn.CrossEntropyLoss()
 
                     if fisher_samples > 0:
-                        sample_ys = torch.multinomial(torch.nn.functional.softmax(logits[:, :-1, :].view(-1, logits.size(-1)).cpu().data, dim=1), fisher_samples).to(dev)
+                        sample_ys = torch.multinomial(
+                            torch.nn.functional.softmax(
+                                logits[:, :-1, :].view(-1, logits.size(-1)).cpu().data, dim=1
+                            ),
+                            fisher_samples,
+                        ).to(dev)
 
-                        L = torch.mean(torch.stack([ loss(logits[:, :-1, :].view(-1, logits.size(-1)), sample_y) for sample_y in sample_ys.T], 0), 0)
+                        L = torch.mean(
+                            torch.stack(
+                                [
+                                    loss(logits[:, :-1, :].view(-1, logits.size(-1)), sample_y)
+                                    for sample_y in sample_ys.T
+                                ],
+                                0,
+                            ),
+                            0,
+                        )
                     else:
                         L = loss(logits[:, :-1, :].view(-1, logits.size(-1)), batch[:, 1:].view(-1))
-                    
+
                     L.backward()
 
                     losses += L.item()
 
-                print('Done passing data.')
+                print("Done passing data.")
 
                 if diagonal and (krank_i == 0) and (kpca_i == 0):
                     for mod in self.to_hook:
-                        diag = curv_buffer[mod]['diagonal']
-                        curvature[mod][f'diagonal'].copy_(diag)
-                    
+                        diag = curv_buffer[mod]["diagonal"]
+                        curvature[mod][f"diagonal"].copy_(diag)
+
                 if use_iad:
                     for mod in self.to_hook:
-                        G_agg = curv_buffer[mod]['G_agg']
-                        A_agg = curv_buffer[mod]['A_agg']
+                        G_agg = curv_buffer[mod]["G_agg"]
+                        A_agg = curv_buffer[mod]["A_agg"]
 
                         g_norm = G_agg.norm()
                         a_norm = A_agg.norm()
                         norm_sqrt = math.sqrt(g_norm * a_norm)
 
                         if (g_norm == 0.0) or (a_norm == 0.0):
-                            curvature[mod][f'G_mat_{krank_i}'].zero_()
-                            curvature[mod][f'A_mat_{krank_i}'].zero_()
+                            curvature[mod][f"G_mat_{krank_i}"].zero_()
+                            curvature[mod][f"A_mat_{krank_i}"].zero_()
                         else:
-                            curvature[mod][f'G_mat_{krank_i}'].copy_(G_agg / g_norm * norm_sqrt)
-                            curvature[mod][f'A_mat_{krank_i}'].copy_(A_agg / a_norm * norm_sqrt)
+                            curvature[mod][f"G_mat_{krank_i}"].copy_(G_agg / g_norm * norm_sqrt)
+                            curvature[mod][f"A_mat_{krank_i}"].copy_(A_agg / a_norm * norm_sqrt)
 
-                    print('[Used IAD to obtain lightweight first Kronecker rank estimate (KFAC).]')
+                    print("[Used IAD to obtain lightweight first Kronecker rank estimate (KFAC).]")
                     break
 
                 if kpca_i % 2 == 0:
                     # update G
 
                     for mod in self.to_hook:
-                        G_agg = curv_buffer[mod]['G_agg']
+                        G_agg = curv_buffer[mod]["G_agg"]
 
                         g_norm = torch.norm(G_agg)
                         if g_norm != 0:
@@ -535,8 +637,8 @@ class KFAC(Curvature):
                         else:
                             G_vec = G_agg
 
-                        curv_buffer[mod]['G_vec'] = G_vec
-                        curv_buffer[mod]['G_agg'].zero_()
+                        curv_buffer[mod]["G_vec"] = G_vec
+                        curv_buffer[mod]["G_agg"].zero_()
 
                         del G_agg
                 else:
@@ -545,11 +647,11 @@ class KFAC(Curvature):
                     kpca_errors = []
 
                     for mod in self.to_hook:
-                        G_agg = curv_buffer[mod]['G_agg']
-                        A_agg = curv_buffer[mod]['A_agg']
+                        G_agg = curv_buffer[mod]["G_agg"]
+                        A_agg = curv_buffer[mod]["A_agg"]
 
-                        G_vec = curv_buffer[mod]['G_vec']
-                        eigval = curv_buffer[mod]['eigval']
+                        G_vec = curv_buffer[mod]["G_vec"]
+                        eigval = curv_buffer[mod]["eigval"]
 
                         err = torch.norm(G_agg - eigval * G_vec).cpu().item()
 
@@ -560,20 +662,20 @@ class KFAC(Curvature):
                         else:
                             A_vec = A_agg
 
-                        curv_buffer[mod]['A_vec'] = A_vec
-                        curv_buffer[mod]['A_agg'].zero_()
+                        curv_buffer[mod]["A_vec"] = A_vec
+                        curv_buffer[mod]["A_agg"].zero_()
 
                         eigval = a_norm.abs()
 
-                        curv_buffer[mod]['eigval'] = eigval
+                        curv_buffer[mod]["eigval"] = eigval
 
                         if (kpca_i + 1) == kpca_iter:
                             if (G_vec[0, 0] < 0) and (A_vec[0, 0] < 0):
-                                curvature[mod][f'G_mat_{krank_i}'].copy_(-G_vec * math.sqrt(eigval))
-                                curvature[mod][f'A_mat_{krank_i}'].copy_(-A_vec * math.sqrt(eigval))
+                                curvature[mod][f"G_mat_{krank_i}"].copy_(-G_vec * math.sqrt(eigval))
+                                curvature[mod][f"A_mat_{krank_i}"].copy_(-A_vec * math.sqrt(eigval))
                             else:
-                                curvature[mod][f'G_mat_{krank_i}'].copy_(G_vec * math.sqrt(eigval))
-                                curvature[mod][f'A_mat_{krank_i}'].copy_(A_vec * math.sqrt(eigval))
+                                curvature[mod][f"G_mat_{krank_i}"].copy_(G_vec * math.sqrt(eigval))
+                                curvature[mod][f"A_mat_{krank_i}"].copy_(A_vec * math.sqrt(eigval))
 
                         kpca_errors.append(err)
 
@@ -582,13 +684,17 @@ class KFAC(Curvature):
                         del G_agg
                         del A_agg
 
-                    print('[aggregated and power iteration]: ')
-                    print('mean errors:', np.mean(kpca_errors), np.std(kpca_errors))
-                    print('max errors:', np.max(kpca_errors))
+                    print("[aggregated and power iteration]: ")
+                    print("mean errors:", np.mean(kpca_errors), np.std(kpca_errors))
+                    print("max errors:", np.max(kpca_errors))
                     if writer is not None:
-                        writer.add_scalar(f'kpca_hooks/krank={krank_i}', len(self.to_hook), kpca_i)
-                        writer.add_scalar(f'kpca_mean/{krank_i}_shot={shot_i}', np.mean(kpca_errors), kpca_i)
-                        writer.add_scalar(f'kpca_max/{krank_i}_shot={shot_i}', np.max(kpca_errors), kpca_i)
+                        writer.add_scalar(f"kpca_hooks/krank={krank_i}", len(self.to_hook), kpca_i)
+                        writer.add_scalar(
+                            f"kpca_mean/{krank_i}_shot={shot_i}", np.mean(kpca_errors), kpca_i
+                        )
+                        writer.add_scalar(
+                            f"kpca_max/{krank_i}_shot={shot_i}", np.max(kpca_errors), kpca_i
+                        )
 
                     # clean
                     for p in model.parameters():
@@ -615,9 +721,5 @@ class KFAC(Curvature):
 
         del curv_buffer
 
-        print('Done estimating loss landscape curvature.')
+        print("Done estimating loss landscape curvature.")
         self.curvature = curvature
-
-
-
-

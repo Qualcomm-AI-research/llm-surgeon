@@ -1,20 +1,17 @@
 # Copyright (c) 2023 Qualcomm Technologies, Inc.
 # All Rights Reserved.
 
+import math
 from typing import Optional, Tuple
 
 import numpy as np
-
 import torch
-from torch import nn
-from torch import optim
+from torch import nn, optim
 from torch.utils.data import DataLoader
 from transformers import DefaultDataCollator
+from transformers.models.opt.modeling_opt import OPTAttention
 
 from eval import eval_model
-
-import math
-from transformers.models.opt.modeling_opt import OPTAttention
 
 
 class OPTLoraAttention(nn.Module):
@@ -22,6 +19,7 @@ class OPTLoraAttention(nn.Module):
     Multi-headed attention from 'Attention Is All You Need' paper
     https://arxiv.org/abs/1706.03762
     """
+
     def __init__(
         self,
         embed_dim: int,
@@ -44,7 +42,7 @@ class OPTLoraAttention(nn.Module):
             )
         self.scaling = self.head_dim**-0.5
         self.is_decoder = is_decoder
-        
+
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -59,17 +57,16 @@ class OPTLoraAttention(nn.Module):
         self.k_lora2 = nn.Linear(lora_dim, embed_dim, bias=False)
         self.v_lora2 = nn.Linear(lora_dim, embed_dim, bias=False)
         self.out_lora2 = nn.Linear(lora_dim, embed_dim, bias=False)
-            
+
         self.q_lora1.weight.data.normal_(0.0, 1.0)
         self.k_lora1.weight.data.normal_(0.0, 1.0)
         self.v_lora1.weight.data.normal_(0.0, 1.0)
         self.out_lora1.weight.data.normal_(0.0, 1.0)
-        
+
         self.q_lora2.weight.data.zero_()
         self.k_lora2.weight.data.zero_()
         self.v_lora2.weight.data.zero_()
         self.out_lora2.weight.data.zero_()
-
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -98,7 +95,9 @@ class OPTLoraAttention(nn.Module):
         self.q_lora1.weight.data[:, col_mask] = 0.0
         self.q_lora2.weight.data[row_mask, :] = 0.0
 
-        query_states = (self.q_proj(hidden_states) + self.q_lora2(self.q_lora1(hidden_states))) * self.scaling
+        query_states = (
+            self.q_proj(hidden_states) + self.q_lora2(self.q_lora1(hidden_states))
+        ) * self.scaling
 
         # get key, value proj
         if is_cross_attention and past_key_value is not None:
@@ -113,13 +112,17 @@ class OPTLoraAttention(nn.Module):
             col_mask = torch.all(self.k_proj.weight == 0.0, 0)
             self.k_lora1.weight.data[:, col_mask] = 0.0
             self.k_lora2.weight.data[row_mask, :] = 0.0
-            key_states = self._shape(self.k_proj(hidden_states) + self.k_lora2(self.k_lora1(hidden_states)), -1, bsz)
+            key_states = self._shape(
+                self.k_proj(hidden_states) + self.k_lora2(self.k_lora1(hidden_states)), -1, bsz
+            )
 
             row_mask = torch.all(self.v_proj.weight == 0.0, 1)
             col_mask = torch.all(self.v_proj.weight == 0.0, 0)
             self.v_lora1.weight.data[:, col_mask] = 0.0
             self.v_lora2.weight.data[row_mask, :] = 0.0
-            value_states = self._shape(self.v_proj(hidden_states) + self.v_lora2(self.v_lora1(hidden_states)), -1, bsz)
+            value_states = self._shape(
+                self.v_proj(hidden_states) + self.v_lora2(self.v_lora1(hidden_states)), -1, bsz
+            )
 
         if self.is_decoder:
             # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
@@ -152,13 +155,16 @@ class OPTLoraAttention(nn.Module):
                 )
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = torch.max(
-                attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+                attn_weights,
+                torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device),
             )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         # upcast to fp32 if the weights are in fp16. Please see https://github.com/huggingface/transformers/pull/17437
         if attn_weights.dtype == torch.float16:
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+                torch.float16
+            )
         else:
             attn_weights = nn.functional.softmax(attn_weights, dim=-1)
 
@@ -168,7 +174,9 @@ class OPTLoraAttention(nn.Module):
                     f"Head mask for a single layer should be of size {(self.num_heads,)}, but is"
                     f" {layer_head_mask.size()}"
                 )
-            attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(
+                bsz, self.num_heads, tgt_len, src_len
+            )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         if output_attentions:
@@ -207,6 +215,7 @@ class OPTLoraAttention(nn.Module):
 
         return attn_output, attn_weights_reshaped, past_key_value
 
+
 def add_lora(model):
     lora_params = []
 
@@ -233,33 +242,56 @@ def add_lora(model):
 
                 if not found:
                     raise ValueError(f"No new parameter found with name {old_name}...")
-                
+
             dtype, device = m.v_proj.weight.dtype, m.v_proj.weight.device
 
             for param in lora_attention.parameters():
                 param.data = param.data
                 param = param.to(dtype=dtype, device=device)
 
-            lora_layers = [lora_attention.q_lora1, lora_attention.q_lora2, lora_attention.k_lora1, lora_attention.k_lora2, lora_attention.v_lora1, lora_attention.v_lora2, lora_attention.out_lora1, lora_attention.out_lora2]
+            lora_layers = [
+                lora_attention.q_lora1,
+                lora_attention.q_lora2,
+                lora_attention.k_lora1,
+                lora_attention.k_lora2,
+                lora_attention.v_lora1,
+                lora_attention.v_lora2,
+                lora_attention.out_lora1,
+                lora_attention.out_lora2,
+            ]
 
             for lora_layer in lora_layers:
                 lora_params += list(lora_layer.parameters())
 
             lora_attention.to(device)
-            
+
             to_replace[n] = lora_attention
-            
+
     # actual replacement
     for n, p in to_replace.items():
         subm = model
-        for subn in n.split('.')[:-1]:
+        for subn in n.split(".")[:-1]:
             subm = getattr(subm, subn)
-        print(f'\treplaced {n}')
+        print(f"\treplaced {n}")
 
     return lora_params
 
-def tune_lora(model, model_str, trainencs, testenc, writer, writer_str, lora_subset, log=False, n_epochs=10, lr=0.0001, dev=None, batch_size=1):
-    print('Tuning lora...')
+
+def tune_lora(
+    model,
+    model_str,
+    trainencs,
+    testenc,
+    writer,
+    writer_str,
+    lora_subset,
+    log=False,
+    n_epochs=10,
+    lr=0.0001,
+    dev=None,
+    batch_size=1,
+):
+    print("Tuning lora...")
 
     lora_params = add_lora(model)
 
@@ -270,28 +302,34 @@ def tune_lora(model, model_str, trainencs, testenc, writer, writer_str, lora_sub
 
     indices = np.arange(len(trainencs))
     np.random.shuffle(indices)
-    indices = list(indices[:int(len(indices) * lora_subset)])
+    indices = list(indices[: int(len(indices) * lora_subset)])
 
     train_dataloader = DataLoader(
-        [x for i, x in enumerate(trainencs) if i in indices], shuffle=False, batch_size=1, num_workers=4, collate_fn=data_collator
+        [x for i, x in enumerate(trainencs) if i in indices],
+        shuffle=False,
+        batch_size=1,
+        num_workers=4,
+        collate_fn=data_collator,
     )
 
     for param in model.parameters():
         param.requires_grad = False
-        
+
     for param in lora_params:
         param.requires_grad = True
 
     optimizer = optim.Adam(lora_params, lr=lr)
-    scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=n_epochs)
+    scheduler = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1.0, end_factor=0.0, total_iters=n_epochs
+    )
 
     for epoch in range(n_epochs):
         model.to(dev)
-        
+
         losses = 0.0
         for i, batch in enumerate(train_dataloader):
             optimizer.zero_grad()
-            
+
             if len(batch.return_tensors[0]) == 2:
                 batch = torch.tensor(batch.return_tensors[0][0]).to(dev)
             elif len(batch.return_tensors[0]) > 2:
@@ -300,33 +338,33 @@ def tune_lora(model, model_str, trainencs, testenc, writer, writer_str, lora_sub
                 raise ValueError(f"Something went wrong parsing the input batch shape")
 
             out = model(batch)
-            logits = out['logits']
-            
+            logits = out["logits"]
+
             loss = nn.CrossEntropyLoss()
-            
+
             L = loss(logits[:, :-1, :].view(-1, logits.size(-1)), batch[:, 1:].view(-1))
-            
+
             L.backward()
-            
+
             optimizer.step()
-            
+
             losses += L.item()
-            
+
         scheduler.step()
         losses = losses / len(train_dataloader)
 
         print("Done LoRA: ", math.exp(losses))
-        
+
         print(f"Evaluating...")
         test_outdir = eval_model(model, model_str, testenc)
-        print(f'Test  PPL [en]:', test_outdir['ppl'])
+        print(f"Test  PPL [en]:", test_outdir["ppl"])
 
         if writer is not None:
-            writer.add_scalar(f'lora/{writer_str}_ppl', test_outdir['ppl'], epoch)
+            writer.add_scalar(f"lora/{writer_str}_ppl", test_outdir["ppl"], epoch)
 
 
 def undo_lora(model):
-    print('Undoing lora terms...')
+    print("Undoing lora terms...")
 
     # create dict with new layers
     to_replace = {}
@@ -344,7 +382,7 @@ def undo_lora(model):
             k_lora = m.k_lora2.weight @ m.k_lora1.weight
             v_lora = m.v_lora2.weight @ m.v_lora1.weight
             out_lora = m.out_lora2.weight @ m.out_lora1.weight
-            
+
             dtype = m.out_proj.weight.dtype
 
             for new_name, new_param in attention.named_parameters():
@@ -362,19 +400,18 @@ def undo_lora(model):
             del m
 
             to_replace[n] = attention
-            
+
     # actual replacement
     for n, p in to_replace.items():
         subm = model
-        for subn in n.split('.')[:-1]:
+        for subn in n.split(".")[:-1]:
             subm = getattr(subm, subn)
-        setattr(subm, n.split('.')[-1], p)
-        print(f'\treplaced {n}')
+        setattr(subm, n.split(".")[-1], p)
+        print(f"\treplaced {n}")
 
-    
 
 def absorb_lora(model):
-    print('Absorbing lora terms...')
+    print("Absorbing lora terms...")
 
     # create dict with new layers
     to_replace = {}
@@ -392,7 +429,7 @@ def absorb_lora(model):
             k_lora = m.k_lora2.weight @ m.k_lora1.weight
             v_lora = m.v_lora2.weight @ m.v_lora1.weight
             out_lora = m.out_lora2.weight @ m.out_lora1.weight
-            
+
             m.q_proj.weight.data += q_lora
             m.k_proj.weight.data += k_lora
             m.v_proj.weight.data += v_lora
@@ -415,13 +452,11 @@ def absorb_lora(model):
             del m
 
             to_replace[n] = attention
-            
+
     # actual replacement
     for n, p in to_replace.items():
         subm = model
-        for subn in n.split('.')[:-1]:
+        for subn in n.split(".")[:-1]:
             subm = getattr(subm, subn)
-        setattr(subm, n.split('.')[-1], p)
-        print(f'\treplaced {n}')
-
-
+        setattr(subm, n.split(".")[-1], p)
+        print(f"\treplaced {n}")

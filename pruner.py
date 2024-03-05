@@ -5,9 +5,8 @@ import math
 
 import torch
 
-from utils import full_to_sub, sub_to_full, aug
-
-from curvature import Identity, Activations, KFAC
+from curvature import KFAC, Activations, Identity
+from utils import aug, full_to_sub, sub_to_full
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
@@ -25,10 +24,10 @@ class Pruner:
         # Retrieve G, A
         G, A = [], []
 
-        krank = len(self.curvature) // 2 # bit hacky way of retrieving kfac here
+        krank = len(self.curvature) // 2  # bit hacky way of retrieving kfac here
         for i in range(krank):
-            A.append(self.curvature[f'A_mat_{i}'])
-            G.append(self.curvature[f'G_mat_{i}'])
+            A.append(self.curvature[f"A_mat_{i}"])
+            G.append(self.curvature[f"G_mat_{i}"])
 
         has_bias = self.layer.bias is not None
 
@@ -37,11 +36,15 @@ class Pruner:
         curvature_device = A[0].device
 
         if has_bias:
-            W = torch.zeros((self.layer.weight.shape[0], self.layer.weight.shape[1] + 1), device=W_device)
+            W = torch.zeros(
+                (self.layer.weight.shape[0], self.layer.weight.shape[1] + 1), device=W_device
+            )
             W[:, :-1] = self.layer.weight.data.float()
             W[:, -1] = self.layer.bias.data.float()
         else:
-            W = torch.zeros((self.layer.weight.shape[0], self.layer.weight.shape[1]), device=W_device)
+            W = torch.zeros(
+                (self.layer.weight.shape[0], self.layer.weight.shape[1]), device=W_device
+            )
             W.copy_(self.layer.weight.data.float())
 
         # set very small values to zero
@@ -54,12 +57,12 @@ class Pruner:
         dead_cols = (~W.to(curvature_device).any(0)) | (A[0].diag() == 0)
         dead_rows = (~W.to(curvature_device).any(1)) | (G[0].diag() == 0)
 
-        if 'diagonal' in self.curvature.keys():
-            diagonal = self.curvature['diagonal']
+        if "diagonal" in self.curvature.keys():
+            diagonal = self.curvature["diagonal"]
         else:
             diagonal = None
 
-        W[dead_rows, :] = 0.0 
+        W[dead_rows, :] = 0.0
         W[:, dead_cols] = 0.0
         for i in range(krank):
             G[i][dead_rows, :] = 0.0
@@ -78,11 +81,15 @@ class Pruner:
 
         # redo dead_cols, dead_rows (might be slightly more very incidentally)
         if has_bias:
-            W_new = torch.zeros((self.layer.weight.shape[0], self.layer.weight.shape[1] + 1), device=W_device)
+            W_new = torch.zeros(
+                (self.layer.weight.shape[0], self.layer.weight.shape[1] + 1), device=W_device
+            )
             W_new[:, :-1] = self.layer.weight.data.float()
             W_new[:, -1] = self.layer.bias.data.float()
         else:
-            W_new = torch.zeros((self.layer.weight.shape[0], self.layer.weight.shape[1]), device=W_device)
+            W_new = torch.zeros(
+                (self.layer.weight.shape[0], self.layer.weight.shape[1]), device=W_device
+            )
             W_new.copy_(self.layer.weight.data.float())
         dead_cols = (~W.to(curvature_device).any(0)) | (A[0].diag() == 0)
         dead_rows = (~W.to(curvature_device).any(1)) | (G[0].diag() == 0)
@@ -90,14 +97,29 @@ class Pruner:
         if sub:
             W = full_to_sub(W, dead_rows, dead_cols)
             G = [full_to_sub(Gi, dead_rows, dead_rows) for Gi in G]
-            A = [full_to_sub(Ai, dead_cols, dead_cols) for Ai in A] 
+            A = [full_to_sub(Ai, dead_cols, dead_cols) for Ai in A]
             if diagonal is not None:
                 diagonal = full_to_sub(diagonal, dead_rows, dead_cols)
 
         return W, G, A, diagonal, dead_rows, dead_cols
 
-
-    def local_costs(self, W, G, A, diagonal, structure, curvature, obd, use_diagonal, rank1cost, damp_g, damp_a, solver=True, Ginv=None, Ainv=None):
+    def local_costs(
+        self,
+        W,
+        G,
+        A,
+        diagonal,
+        structure,
+        curvature,
+        obd,
+        use_diagonal,
+        rank1cost,
+        damp_g,
+        damp_a,
+        solver=True,
+        Ginv=None,
+        Ainv=None,
+    ):
         if isinstance(curvature, Identity):
             assert obd, f"OBS not available for magnitude pruning."
 
@@ -122,10 +144,18 @@ class Pruner:
                     Ainv = [x.to(device) for x in Ainv]
             if diagonal is not None:
                 diagonal = diagonal.to(device)
-            
+
         if isinstance(curvature, KFAC) and (curvature.krank == 2) and (not rank1cost):
-            damper_g = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_g))
-            damper_a = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_a))
+            damper_g = math.sqrt(
+                math.sqrt(
+                    sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_g
+                )
+            )
+            damper_a = math.sqrt(
+                math.sqrt(
+                    sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_a
+                )
+            )
 
             if diagonal is not None:
                 damper_g = math.sqrt(math.sqrt(diagonal.mean() * damp_g))
@@ -168,64 +198,72 @@ class Pruner:
 
             sinv = 1 / s
 
-        if structure == 'element':
+        if structure == "element":
             if isinstance(curvature, Identity):
-                losses = 0.5 * (W ** 2)
+                losses = 0.5 * (W**2)
             elif isinstance(curvature, Activations):
                 if obd:
-                    losses = 0.5 * (W ** 2) * sum([Ai.diag().reshape(1, -1) for Ai in A])
+                    losses = 0.5 * (W**2) * sum([Ai.diag().reshape(1, -1) for Ai in A])
                 else:
-                    losses = 0.5 * (W ** 2) / torch.diag(Ainv[0]).reshape(1, -1)
+                    losses = 0.5 * (W**2) / torch.diag(Ainv[0]).reshape(1, -1)
             elif isinstance(curvature, KFAC):
                 if obd:
                     if use_diagonal:
                         F_diag = diagonal
                     else:
                         F_diag = sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)])
-                    losses = 0.5 * (W ** 2) * F_diag
+                    losses = 0.5 * (W**2) * F_diag
                 else:
                     if (curvature.krank == 1) or rank1cost:
                         Finv_diag = torch.outer(Ginv[0].diag(), Ainv[0].diag())
                     elif curvature.krank == 2:
-                        Finv_diag = (K1 ** 2) @ sinv @ (K2.T ** 2)
+                        Finv_diag = (K1**2) @ sinv @ (K2.T**2)
 
-                    losses = 0.5 * (W ** 2) / Finv_diag
+                    losses = 0.5 * (W**2) / Finv_diag
             else:
                 raise NotImplementedError(f"Unknown curvature:', {curvature}")
 
-        elif structure == 'row':
+        elif structure == "row":
             if isinstance(curvature, Identity):
                 losses = torch.norm(W, p=2, dim=1)
             elif isinstance(curvature, Activations):
                 if obd:
-                    losses = 0.5 * (W ** 2) * torch.diag(sum(A)).reshape(1, -1)
+                    losses = 0.5 * (W**2) * torch.diag(sum(A)).reshape(1, -1)
                 else:
-                    losses = 0.5 * (W ** 2) / torch.diag(Ainv[0]).reshape(1, -1)
+                    losses = 0.5 * (W**2) / torch.diag(Ainv[0]).reshape(1, -1)
                 losses = losses.sum(1)
             elif isinstance(curvature, KFAC):
                 if obd:
-                    losses = 0.5 * sum([torch.sum((W @ Ai) * W, 1) * Gi.diag() for Gi, Ai in zip(G, A)])
+                    losses = 0.5 * sum(
+                        [torch.sum((W @ Ai) * W, 1) * Gi.diag() for Gi, Ai in zip(G, A)]
+                    )
                 else:
                     if (curvature.krank == 1) or rank1cost:
                         G0inv_diag = torch.diag(Ginv[0])
                         losses = 0.5 * torch.sum((W @ A[0]) * W, 1) / G0inv_diag
                     elif curvature.krank == 2:
                         R, C = W.shape
-    
+
                         rstep = 5
                         losses = torch.zeros(R, device=K1.device)
                         for ri in range(0, R, rstep):
                             ri_end = min(R, ri + rstep)
 
                             Wr = W[ri:ri_end]
-                            Kr = torch.kron(K1[ri:ri_end], K2).view(-1, C, R*C) # R'C x RC
-                            Zr = torch.einsum('riz,rjz->rij', Kr * sinv.view(1, 1, -1), Kr) # R' x C x C
+                            Kr = torch.kron(K1[ri:ri_end], K2).view(-1, C, R * C)  # R'C x RC
+                            Zr = torch.einsum(
+                                "riz,rjz->rij", Kr * sinv.view(1, 1, -1), Kr
+                            )  # R' x C x C
 
                             if solver:
-                                losses[ri:ri_end] = torch.einsum('ri,ri->r', Wr, torch.linalg.solve(Zr.view(-1, C, C), Wr))
+                                losses[ri:ri_end] = torch.einsum(
+                                    "ri,ri->r", Wr, torch.linalg.solve(Zr.view(-1, C, C), Wr)
+                                )
                             else:
-                                Zr = torch.inverse(Zr) # R' x C x C
-                                losses[ri:ri_end] = torch.einsum('ri,rij,rj->r', Wr, Zr.view(-1, C, C), Wr)
+                                Zr = torch.inverse(Zr)  # R' x C x C
+                                losses[ri:ri_end] = torch.einsum(
+                                    "ri,rij,rj->r", Wr, Zr.view(-1, C, C), Wr
+                                )
 
                             del Kr
                             del Zr
@@ -234,18 +272,20 @@ class Pruner:
                         raise NotImplementedError(f"OBS loss for krank > 2 not done yet")
             else:
                 raise NotImplementedError(f"Unknown curvature:', {curvature}")
-        elif structure == 'column':
+        elif structure == "column":
             if isinstance(curvature, Identity):
                 losses = torch.norm(W, p=2, dim=0)
             elif isinstance(curvature, Activations):
                 if obd:
-                    losses = 0.5 * (W ** 2) * sum([Ai.diag().reshape(1, -1) for Ai in A])
+                    losses = 0.5 * (W**2) * sum([Ai.diag().reshape(1, -1) for Ai in A])
                 else:
-                    losses = 0.5 * (W ** 2) / torch.diag(Ainv[0]).reshape(1, -1)
+                    losses = 0.5 * (W**2) / torch.diag(Ainv[0]).reshape(1, -1)
                 losses = losses.sum(0)
             elif isinstance(curvature, KFAC):
                 if obd:
-                    losses = 0.5 * sum([torch.sum((Gi @ W) * W, 0) * Ai.diag() for Gi, Ai in zip(G, A)])
+                    losses = 0.5 * sum(
+                        [torch.sum((Gi @ W) * W, 0) * Ai.diag() for Gi, Ai in zip(G, A)]
+                    )
                 else:
                     if (curvature.krank == 1) or rank1cost:
                         A0inv_diag = torch.diag(Ainv[0])
@@ -258,16 +298,22 @@ class Pruner:
                         for ci in range(0, C, cstep):
                             ci_end = min(C, ci + cstep)
 
-                            Kc = torch.kron(K1, K2[ci:ci_end]).view(R, -1, R*C) # R x C' x RC
+                            Kc = torch.kron(K1, K2[ci:ci_end]).view(R, -1, R * C)  # R x C' x RC
                             Wc = W[:, ci:ci_end]
 
-                            Zc = torch.einsum('icz,jcz->cij', Kc * sinv.view(1, 1, -1), Kc) # C' x R x R
-    
+                            Zc = torch.einsum(
+                                "icz,jcz->cij", Kc * sinv.view(1, 1, -1), Kc
+                            )  # C' x R x R
+
                             if solver:
-                                losses[ci:ci_end] = torch.einsum('ic,ci->c', Wc, torch.linalg.inverse(Zc.view(-1, R, R), Wc.T))
+                                losses[ci:ci_end] = torch.einsum(
+                                    "ic,ci->c", Wc, torch.linalg.inverse(Zc.view(-1, R, R), Wc.T)
+                                )
                             else:
-                                Zc = torch.inverse(Zc) # C' x R x R
-                                losses[ci:ci_end] = torch.einsum('ic,cij,jc->c', Wc, Zc.view(-1, R, R), Wc)
+                                Zc = torch.inverse(Zc)  # C' x R x R
+                                losses[ci:ci_end] = torch.einsum(
+                                    "ic,cij,jc->c", Wc, Zc.view(-1, R, R), Wc
+                                )
 
                             del Wc
                             del Kc
@@ -284,8 +330,26 @@ class Pruner:
 
         return losses
 
-
-    def weight_update(self, structures, curvature, obd, global_threshold, update_scale, max_correlate, losses, Ginv, Ainv, use_diagonal, addupdate, damp_g, damp_a, zerofix, strictmax, solver=True, device=None):
+    def weight_update(
+        self,
+        structures,
+        curvature,
+        obd,
+        global_threshold,
+        update_scale,
+        max_correlate,
+        losses,
+        Ginv,
+        Ainv,
+        use_diagonal,
+        addupdate,
+        damp_g,
+        damp_a,
+        zerofix,
+        strictmax,
+        solver=True,
+        device=None,
+    ):
         W, G, A, diagonal, dead_rows, dead_cols = self.WGA()
 
         krank = len(A)
@@ -301,27 +365,33 @@ class Pruner:
                 Ainv = [x.to(device) for x in Ainv]
             if diagonal is not None:
                 diagonal = diagonal.to(device)
-    
+
         if diagonal is not None:
-            F_diag = sum([Gi.diag() for Gi in G]).view(-1, 1) * sum([Ai.diag() for Ai in A]).view(1, -1)
+            F_diag = sum([Gi.diag() for Gi in G]).view(-1, 1) * sum([Ai.diag() for Ai in A]).view(
+                1, -1
+            )
             diag_res = F_diag - diagonal
 
-        if (('column' in structures) and ('row' in structures)):
+        if ("column" in structures) and ("row" in structures):
             row_losses, col_losses = losses
 
-            assert W.shape[0] == row_losses.shape[0], f"W.shape[0] ({W.shape}) does not match shape of row losses ({row_losses.shape})"
-            assert W.shape[1] == col_losses.shape[0], f"W.shape[1] ({W.shape}) does not match shape of column losses ({col_losses.shape})"
+            assert (
+                W.shape[0] == row_losses.shape[0]
+            ), f"W.shape[0] ({W.shape}) does not match shape of row losses ({row_losses.shape})"
+            assert (
+                W.shape[1] == col_losses.shape[0]
+            ), f"W.shape[1] ({W.shape}) does not match shape of column losses ({col_losses.shape})"
 
             row_mask = row_losses <= global_threshold
             col_mask = col_losses <= global_threshold
 
-            mask = ~torch.outer(~row_mask, ~col_mask) # 'logical OR' outer product
+            mask = ~torch.outer(~row_mask, ~col_mask)  # 'logical OR' outer product
 
             do_update = (not obd) and (mask.any())
 
             if do_update:
                 pruning_dev = W.device
-                print(f'Structured update (max_correlate={max_correlate})')
+                print(f"Structured update (max_correlate={max_correlate})")
 
                 r_indices = torch.where(row_mask)[0].cpu()
                 c_indices = torch.where(col_mask)[0].cpu()
@@ -342,13 +412,37 @@ class Pruner:
                     R, C = W.shape
 
                     if krank == 1:
-                        s1, K1 = torch.linalg.eigh(G[0] + torch.eye(len(G[0]), device=G[0].device, dtype=G[0].dtype) * damp_g * torch.mean(G[0].diag()))
-                        s2, K2 = torch.linalg.eigh(A[0] + torch.eye(len(A[0]), device=A[0].device, dtype=A[0].dtype) * damp_a * torch.mean(A[0].diag()))
+                        s1, K1 = torch.linalg.eigh(
+                            G[0]
+                            + torch.eye(len(G[0]), device=G[0].device, dtype=G[0].dtype)
+                            * damp_g
+                            * torch.mean(G[0].diag())
+                        )
+                        s2, K2 = torch.linalg.eigh(
+                            A[0]
+                            + torch.eye(len(A[0]), device=A[0].device, dtype=A[0].dtype)
+                            * damp_a
+                            * torch.mean(A[0].diag())
+                        )
 
                         s = torch.outer(s1, s2)
                     elif krank == 2:
-                        damper_g = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_g))
-                        damper_a = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_a))
+                        damper_g = math.sqrt(
+                            math.sqrt(
+                                sum(
+                                    [torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]
+                                ).mean()
+                                * damp_g
+                            )
+                        )
+                        damper_a = math.sqrt(
+                            math.sqrt(
+                                sum(
+                                    [torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]
+                                ).mean()
+                                * damp_a
+                            )
+                        )
 
                         if diagonal is not None:
                             damper_g = math.sqrt(math.sqrt(diagonal.mean() * damp_g))
@@ -391,7 +485,7 @@ class Pruner:
                         sinv = 1 / s
                     else:
                         raise NotImplementedError(f"Krank > 2 is not supported")
-                        
+
                     W_errs = torch.zeros_like(W, device=pruning_dev)
 
                     K1 = K1.to(pruning_dev)
@@ -401,40 +495,46 @@ class Pruner:
                         print(f"r_i: {r_i} / {len(r_idx_split)} ({len(r_idx)})")
 
                         if addupdate:
-                            EQw = W[r_idx, :].to(pruning_dev) + W_errs[r_idx, :].to(pruning_dev) # R' x C
+                            EQw = W[r_idx, :].to(pruning_dev) + W_errs[r_idx, :].to(
+                                pruning_dev
+                            )  # R' x C
                         else:
-                            EQw = W[r_idx, :].to(pruning_dev) # R' x C
+                            EQw = W[r_idx, :].to(pruning_dev)  # R' x C
 
-                        K1r = K1[r_idx] # R' x R
+                        K1r = K1[r_idx]  # R' x R
 
                         if krank == 1:
                             if solver:
-                                M1 = (K1r / s1.view(1, -1).to(pruning_dev)) @ K1r.T # R' x R'
-                                M2 = (K2 * s2.view(1, -1).to(pruning_dev)) @ K2.T # C x C
+                                M1 = (K1r / s1.view(1, -1).to(pruning_dev)) @ K1r.T  # R' x R'
+                                M2 = (K2 * s2.view(1, -1).to(pruning_dev)) @ K2.T  # C x C
                                 Mat = torch.linalg.solve(M1, EQw) @ M2.T
                             else:
-                                M1 = torch.inverse((K1r / s1.view(1, -1).to(pruning_dev)) @ K1r.T) # R' x R'
-                                M2 = (K2 * s2.view(1, -1).to(pruning_dev)) @ K2.T # C x C
+                                M1 = torch.inverse(
+                                    (K1r / s1.view(1, -1).to(pruning_dev)) @ K1r.T
+                                )  # R' x R'
+                                M2 = (K2 * s2.view(1, -1).to(pruning_dev)) @ K2.T  # C x C
 
-                                Mat = M1 @ EQw @ M2.T # R' x C
+                                Mat = M1 @ EQw @ M2.T  # R' x C
 
                             del M1
                             del M2
                         elif krank == 2:
-                            Kr = torch.kron(K1r, K2).view(-1, R*C) # R'C x RC
+                            Kr = torch.kron(K1r, K2).view(-1, R * C)  # R'C x RC
 
                             Mat = torch.zeros((Kr.shape[0], Kr.shape[0]), device=pruning_dev)
 
                             istep = 200
                             for i in range(len(Mat)):
                                 i_end = min(len(Mat), i + istep)
-                                Mat[i:i_end] = (Kr[i:i_end] * sinv.view(1, -1).to(pruning_dev)) @ Kr.T # 1 x R'C?
+                                Mat[i:i_end] = (
+                                    Kr[i:i_end] * sinv.view(1, -1).to(pruning_dev)
+                                ) @ Kr.T  # 1 x R'C?
                             if solver:
-                                Mat = torch.linalg.solve(Mat, EQw.view(-1, 1)).view(-1, C) # R' x C
+                                Mat = torch.linalg.solve(Mat, EQw.view(-1, 1)).view(-1, C)  # R' x C
                             else:
-                                Mat = torch.inverse(Mat) # R'C x R'C
+                                Mat = torch.inverse(Mat)  # R'C x R'C
 
-                                Mat = (Mat @ EQw.view(-1, 1)).view(-1, C) # R' x C
+                                Mat = (Mat @ EQw.view(-1, 1)).view(-1, C)  # R' x C
 
                             del Kr
                         else:
@@ -454,40 +554,43 @@ class Pruner:
                         print(f"c_i: {c_i} / {len(c_idx_split)} (len(c_idx)={len(c_idx)})")
 
                         if addupdate:
-                            EQw = W[:, c_idx].to(pruning_dev) + W_errs[:, c_idx].to(pruning_dev) # R' x C
+                            EQw = W[:, c_idx].to(pruning_dev) + W_errs[:, c_idx].to(
+                                pruning_dev
+                            )  # R' x C
                         else:
-                            EQw = W[:, c_idx].to(pruning_dev) # R x C'
+                            EQw = W[:, c_idx].to(pruning_dev)  # R x C'
 
-                        K2c = K2[c_idx] # C' x C
+                        K2c = K2[c_idx]  # C' x C
 
                         if krank == 1:
-                            M1 = (K1 * s1.view(1, -1).to(pruning_dev)) @ K1.T # R x R
+                            M1 = (K1 * s1.view(1, -1).to(pruning_dev)) @ K1.T  # R x R
                             if solver:
-                                M2 = (K2c / s2.view(1, -1).to(pruning_dev)) @ K2c.T # C' x C'
+                                M2 = (K2c / s2.view(1, -1).to(pruning_dev)) @ K2c.T  # C' x C'
 
-                                Mat = M1 @ torch.linalg.solve(M2, EQw.T).T # R x C'check
+                                Mat = M1 @ torch.linalg.solve(M2, EQw.T).T  # R x C'check
                             else:
-                                M2 = torch.inverse((K2c / s2.view(1, -1).to(pruning_dev)) @ K2c.T) # C' x C'
+                                M2 = torch.inverse(
+                                    (K2c / s2.view(1, -1).to(pruning_dev)) @ K2c.T
+                                )  # C' x C'
 
-                                Mat = M1 @ EQw @ M2.T # R x C'
+                                Mat = M1 @ EQw @ M2.T  # R x C'
 
                             W_update = -K1 @ ((K1.T @ Mat @ K2c) / s.to(pruning_dev)) @ K2.T
 
                             del M1
                             del M2
                         elif krank == 2:
-                            Kc = torch.kron(K1, K2c).view(-1, R*C) # RC' x RC
-                            
-                            Mat = (Kc * sinv.view(1, -1).to(pruning_dev)) @ Kc.T # RC' x RC'
+                            Kc = torch.kron(K1, K2c).view(-1, R * C)  # RC' x RC
+
+                            Mat = (Kc * sinv.view(1, -1).to(pruning_dev)) @ Kc.T  # RC' x RC'
 
                             if solver:
-                                Mat = torch.linalg.solve(Mat, EQw.view(-1, 1)).view(R, -1) # R x C'
+                                Mat = torch.linalg.solve(Mat, EQw.view(-1, 1)).view(R, -1)  # R x C'
                             else:
-                                Mat = torch.inverse(Mat) # RC' x RC'
+                                Mat = torch.inverse(Mat)  # RC' x RC'
 
-                                Mat = (Mat @ EQw.view(-1, 1)).view(R, -1) # R x C'
+                                Mat = (Mat @ EQw.view(-1, 1)).view(R, -1)  # R x C'
 
-                            
                             W_update = -K1 @ ((K1.T @ Mat @ K2c) / s.to(pruning_dev)) @ K2.T
 
                             del Kc
@@ -505,42 +608,50 @@ class Pruner:
                     W.add_(W_errs.to(W.device) * update_scale)
 
             W[mask] = 0.0
-        elif (('element' in structures) or ('2:4' in structures)): # or (krank == 2):
-            if 'element' in structures:
-                assert W.shape == losses.shape, f"Shape of W ({W.shape}) does not match shape of losses ({losses.shape})"
+        elif ("element" in structures) or ("2:4" in structures):  # or (krank == 2):
+            if "element" in structures:
+                assert (
+                    W.shape == losses.shape
+                ), f"Shape of W ({W.shape}) does not match shape of losses ({losses.shape})"
                 mask = losses <= global_threshold
-            elif '2:4' in structures:
-                assert W.shape == losses.shape, f"Shape of W ({W.shape}) does not match shape of losses ({losses.shape})"
+            elif "2:4" in structures:
+                assert (
+                    W.shape == losses.shape
+                ), f"Shape of W ({W.shape}) does not match shape of losses ({losses.shape})"
 
                 m, n = 2, 4
                 losses_no_bias = losses[:, :-1].reshape(-1, n)
 
                 block_sorted = torch.sort(losses_no_bias, dim=1)[0]
                 local_threshold = block_sorted[:, (m - 1)].view(-1, 1)
-                block_costs = torch.sum(block_sorted[:, :m], 1) # assumes independence (block cost = sum of element costs)
+                block_costs = torch.sum(
+                    block_sorted[:, :m], 1
+                )  # assumes independence (block cost = sum of element costs)
 
-                cond_local = (losses_no_bias <= local_threshold)
-                cond_global = (block_costs <= global_threshold)
+                cond_local = losses_no_bias <= local_threshold
+                cond_global = block_costs <= global_threshold
 
                 cond = cond_local & cond_global.view(-1, 1)
 
                 mask = torch.zeros_like(losses, dtype=torch.bool)
                 mask[:, :-1] = cond.view(losses.shape[0], -1)
 
-            elif (('row' in structures) and ('column' in structures)): 
+            elif ("row" in structures) and ("column" in structures):
                 # this is not used anymore, because structured pruning uses more efficient dedicated code.
                 row_losses, col_losses = losses
-                assert (W.shape[0] == len(row_losses)) and (W.shape[1] == len(col_losses)), f"Shape of W ({W.shape}) does not match shape of losses ({row_losses.shape}, {col_losses})"
+                assert (W.shape[0] == len(row_losses)) and (
+                    W.shape[1] == len(col_losses)
+                ), f"Shape of W ({W.shape}) does not match shape of losses ({row_losses.shape}, {col_losses})"
 
                 row_mask = row_losses <= global_threshold
                 col_mask = col_losses <= global_threshold
-                
+
                 mask = ~torch.outer(~row_mask, ~col_mask)
             else:
                 raise NotImplementedError(f"Unknown structures: {structures}")
 
             if zerofix:
-                to_update = (W != 0.0)
+                to_update = W != 0.0
 
                 prune_mask = mask & (~to_update)
 
@@ -556,13 +667,13 @@ class Pruner:
                 dev = W.device
                 pruning_dev = W.device
 
-                EQw = W[prune_mask.cpu()].view(-1, 1).to(pruning_dev) # R x W
+                EQw = W[prune_mask.cpu()].view(-1, 1).to(pruning_dev)  # R x W
 
                 Qi = prune_mask.nonzero()
 
                 indices = torch.arange(0, len(Qi))
 
-                print(f'Unstructured update (max_correlate={max_correlate})')
+                print(f"Unstructured update (max_correlate={max_correlate})")
 
                 if max_correlate == 0:
                     idx_split = [indices]
@@ -575,12 +686,16 @@ class Pruner:
                     count = 0
                     for i in range(len(split_sizes_old)):
                         num = split_sizes_old[i]
-                        
+
                         if (count + num) > abs(max_correlate):
                             if strictmax and (count > max_correlate):
-                                sub_split_sizes = [max_correlate for _ in range(count // max_correlate)] + [count % max_correlate]
-                                assert sum(sub_split_sizes) == count, f"{sum(sub_split_sizes)} not equal to {count}"
-                                
+                                sub_split_sizes = [
+                                    max_correlate for _ in range(count // max_correlate)
+                                ] + [count % max_correlate]
+                                assert (
+                                    sum(sub_split_sizes) == count
+                                ), f"{sum(sub_split_sizes)} not equal to {count}"
+
                                 split_sizes.extend(sub_split_sizes)
                             else:
                                 split_sizes.append(count)
@@ -598,15 +713,39 @@ class Pruner:
                 W_errs = torch.zeros_like(W, device=pruning_dev)
 
                 if use_svd:
-                    if (krank == 1):
-                        
-                        s1, K1 = torch.linalg.eigh(G[0] + torch.eye(len(G[0]), device=G[0].device, dtype=G[0].dtype) * damp_g * torch.mean(G[0].diag()))
-                        s2, K2 = torch.linalg.eigh(A[0] + torch.eye(len(A[0]), device=A[0].device, dtype=A[0].dtype) * damp_a * torch.mean(A[0].diag()))
+                    if krank == 1:
+
+                        s1, K1 = torch.linalg.eigh(
+                            G[0]
+                            + torch.eye(len(G[0]), device=G[0].device, dtype=G[0].dtype)
+                            * damp_g
+                            * torch.mean(G[0].diag())
+                        )
+                        s2, K2 = torch.linalg.eigh(
+                            A[0]
+                            + torch.eye(len(A[0]), device=A[0].device, dtype=A[0].dtype)
+                            * damp_a
+                            * torch.mean(A[0].diag())
+                        )
 
                         s = torch.outer(s1, s2)
                     elif krank == 2:
-                        damper_g = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_g))
-                        damper_a = math.sqrt(math.sqrt(sum([torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]).mean() * damp_a))
+                        damper_g = math.sqrt(
+                            math.sqrt(
+                                sum(
+                                    [torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]
+                                ).mean()
+                                * damp_g
+                            )
+                        )
+                        damper_a = math.sqrt(
+                            math.sqrt(
+                                sum(
+                                    [torch.outer(Gi.diag(), Ai.diag()) for Gi, Ai in zip(G, A)]
+                                ).mean()
+                                * damp_a
+                            )
+                        )
 
                         if diagonal is not None:
                             damper_g = math.sqrt(math.sqrt(diagonal.mean() * damp_g))
@@ -661,7 +800,7 @@ class Pruner:
                 for idx_i, idx in enumerate(idx_split):
 
                     if len(idx) == 0:
-                        print(f'[WARNING] Found empty idx split.')
+                        print(f"[WARNING] Found empty idx split.")
                         continue
 
                     # get row/col indices associated with pruned weights
@@ -670,41 +809,47 @@ class Pruner:
 
                     # whether to incorporate updates of previous independent updates in same shot  (recommended)
                     if addupdate:
-                        EQw_part = (EQw[idx].to(pruning_dev) + W_errs[Qir, Qic].view(-1, 1).to(pruning_dev))
+                        EQw_part = EQw[idx].to(pruning_dev) + W_errs[Qir, Qic].view(-1, 1).to(
+                            pruning_dev
+                        )
                     else:
                         EQw_part = EQw[idx].to(pruning_dev)
 
                     Q_len = len(Qir)
 
                     if krank == 1:
-                        if not use_svd: # direct implementation:
+                        if not use_svd:  # direct implementation:
                             Ginv_r = Ginv[0][Qir, :][:, Qir]
                             Ainv_c = Ainv[0][Qic, :][:, Qic]
 
                             C = Ginv_r * Ainv_c
 
-                            Mat = torch.zeros_like(W, device=pruning_dev) # R x W
+                            Mat = torch.zeros_like(W, device=pruning_dev)  # R x W
                             if len(C) == 1:
-                                Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1) # Q x 1
+                                Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1)  # Q x 1
                             else:
                                 if solver:
-                                    Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(-1) # Q x 1
+                                    Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(
+                                        -1
+                                    )  # Q x 1
                                 else:
-                                    Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1) # Q x 1
+                                    Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1)  # Q x 1
 
                             W_update = -Ginv[0] @ Mat @ Ainv[0]
 
                             W_errs.add_(W_update)
 
-                        else: # svd implementation:
+                        else:  # svd implementation:
                             if zerofix:
                                 len_Q = len(Qir)
 
                                 Ni_part = to_update.nonzero()
 
-                                print('Ni_part:', Ni_part.shape)
+                                print("Ni_part:", Ni_part.shape)
                                 if len(Ni_part) == 0:
-                                    print('[WARNING] skipping update because Ni_part has zero elements')
+                                    print(
+                                        "[WARNING] skipping update because Ni_part has zero elements"
+                                    )
 
                                 C = torch.zeros((len_Q, len_Q), device=K1.device)
 
@@ -714,30 +859,32 @@ class Pruner:
                                     print(i, i_end)
 
                                     Nir, Nic = Ni_part[i:i_end, 0], Ni_part[i:i_end, 1]
-                                    print('Nir/Nic:', Nir.shape, Nic.shape)
+                                    print("Nir/Nic:", Nir.shape, Nic.shape)
 
                                     K1r = K1[Qir, :][:, Nir]
-                                    print('K1r:', K1r.shape)
+                                    print("K1r:", K1r.shape)
                                     K2c = K2[Qic, :][:, Nic]
-                                    print('K2c:', K2c.shape)
+                                    print("K2c:", K2c.shape)
 
-                                    C[i:i+i_end] = (K1r * s1[Nir].view(1, -1)) @ K1r.T
-                                    C[i:i+i_end] *= (K2c * s2[Nic].view(1, -1)) @ K2c.T
+                                    C[i : i + i_end] = (K1r * s1[Nir].view(1, -1)) @ K1r.T
+                                    C[i : i + i_end] *= (K2c * s2[Nic].view(1, -1)) @ K2c.T
                             else:
                                 C = K1r / torch.sqrt(s1.view(1, -1).abs())
                                 C = C @ C.T
                                 C_tmp = K2c / torch.sqrt(s2.view(1, -1).abs())
-                                C.mul_(C_tmp @ C_tmp.T) # Q x Q
+                                C.mul_(C_tmp @ C_tmp.T)  # Q x Q
                                 del C_tmp
 
-                            Mat = torch.zeros_like(W, device=pruning_dev) # R x W
+                            Mat = torch.zeros_like(W, device=pruning_dev)  # R x W
                             if len(C) == 1:
-                                Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1) # Q x 1
+                                Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1)  # Q x 1
                             else:
                                 if solver:
-                                    Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(-1) # Q x 1
+                                    Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(
+                                        -1
+                                    )  # Q x 1
                                 else:
-                                    Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1) # Q x 1
+                                    Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1)  # Q x 1
 
                             W_update = -K1 @ ((K1.T @ Mat @ K2) / s) @ K2.T
 
@@ -749,20 +896,22 @@ class Pruner:
                         K1r = K1[Qir]
                         K2c = K2[Qic]
 
-                        EK = (K1r.view(Q_len, -1, 1) * K2c.view(Q_len, 1, -1)).view(Q_len, -1) # Q x RC
+                        EK = (K1r.view(Q_len, -1, 1) * K2c.view(Q_len, 1, -1)).view(
+                            Q_len, -1
+                        )  # Q x RC
 
                         C = EK / torch.sqrt(s.view(1, -1).abs())
                         C = C @ C.T
 
-                        Mat = torch.zeros_like(W, device=pruning_dev) # R x W
+                        Mat = torch.zeros_like(W, device=pruning_dev)  # R x W
 
                         if len(C) == 1:
-                            Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1) # Q x 1
+                            Mat[Qir, Qic] = ((1 / C) @ EQw_part).view(-1)  # Q x 1
                         else:
                             if solver:
-                                Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(-1) # Q x 1
+                                Mat[Qir, Qic] = (torch.linalg.solve(C, EQw_part)).view(-1)  # Q x 1
                             else:
-                                Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1) # Q x 1
+                                Mat[Qir, Qic] = (torch.inverse(C) @ EQw_part).view(-1)  # Q x 1
 
                         W_update = -K1 @ ((K1.T @ Mat @ K2) / s) @ K2.T
 
@@ -781,7 +930,6 @@ class Pruner:
 
                     del Qi_part
                     del EQw_part
-
 
                 W.add_(W_errs.to(W.device) * update_scale)
 
@@ -806,5 +954,3 @@ class Pruner:
 
     def free(self):
         self.curvature = None
-
-

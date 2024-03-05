@@ -4,9 +4,9 @@
 from typing import Optional, Tuple
 
 import torch
+import transformers
 from torch import nn
 
-import transformers
 
 class FusedQK(nn.Linear):
     def __init__(self, *args, **kwargs):
@@ -68,10 +68,10 @@ class OPTGatedAttention(nn.Module):
         bsz, tgt_len, _ = hidden_states.size()
 
         # get query/key proj
-        query_key_states = self.qk_proj(hidden_states) 
+        query_key_states = self.qk_proj(hidden_states)
 
         # get query proj
-        query_states = query_key_states[..., :query_key_states.shape[-1]//2] * self.scaling
+        query_states = query_key_states[..., : query_key_states.shape[-1] // 2] * self.scaling
 
         # get key, value proj
         if is_cross_attention and past_key_value is not None:
@@ -80,7 +80,7 @@ class OPTGatedAttention(nn.Module):
             raise NotImplementedError(f"QK fusion not implmented for cross attention")
         elif past_key_value is not None:
             # reuse k, v, self_attention
-            key_states = query_key_states[..., query_key_states.shape[-1]//2:]
+            key_states = query_key_states[..., query_key_states.shape[-1] // 2 :]
 
             key_states = self._shape(key_states, -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
@@ -88,11 +88,11 @@ class OPTGatedAttention(nn.Module):
             value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
             # self_attention
-            key_states = query_key_states[..., query_key_states.shape[-1]//2:]
+            key_states = query_key_states[..., query_key_states.shape[-1] // 2 :]
 
             key_states = self._shape(key_states, -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
-        
+
         if self.is_decoder:
             # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
             # Further calls to cross_attention layer can then reuse all cross-attention
@@ -124,13 +124,16 @@ class OPTGatedAttention(nn.Module):
                 )
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = torch.max(
-                attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+                attn_weights,
+                torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device),
             )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         # upcast to fp32 if the weights are in fp16. Please see https://github.com/huggingface/transformers/pull/17437
         if attn_weights.dtype == torch.float16:
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(torch.float16)
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+                torch.float16
+            )
         else:
             attn_weights = nn.functional.softmax(attn_weights, dim=-1)
 
@@ -140,7 +143,9 @@ class OPTGatedAttention(nn.Module):
                     f"Head mask for a single layer should be of size {(self.num_heads,)}, but is"
                     f" {layer_head_mask.size()}"
                 )
-            attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(
+                bsz, self.num_heads, tgt_len, src_len
+            )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         if output_attentions:
@@ -190,26 +195,26 @@ def qk_fuse(model):
             for old_name, old_param in m.named_parameters():
                 found = False
 
-                if 'q_proj' in old_name:
-                    if 'weight' in old_name:
-                        print('QK fusion of Q.weight:', old_name, old_param.shape)
-                        gated_attention.qk_proj.weight.data[:len(old_param), :] = old_param.data
+                if "q_proj" in old_name:
+                    if "weight" in old_name:
+                        print("QK fusion of Q.weight:", old_name, old_param.shape)
+                        gated_attention.qk_proj.weight.data[: len(old_param), :] = old_param.data
                         print(gated_attention.qk_proj.weight.data.shape)
-                    elif 'bias' in old_name:
-                        print('QK fusion of Q.bias:', old_name, old_param.shape)
-                        gated_attention.qk_proj.bias.data[:len(old_param)] = old_param.data
+                    elif "bias" in old_name:
+                        print("QK fusion of Q.bias:", old_name, old_param.shape)
+                        gated_attention.qk_proj.bias.data[: len(old_param)] = old_param.data
                         print(gated_attention.qk_proj.bias.data.shape)
                     else:
                         raise ValueError(f"[Err] Where to place: {old_name}")
                     found = True
-                elif 'k_proj' in old_name:
-                    if 'weight' in old_name:
-                        print('QK fusion of K.weight:', old_name, old_param.shape)
-                        gated_attention.qk_proj.weight.data[len(old_param):, :] = old_param.data
+                elif "k_proj" in old_name:
+                    if "weight" in old_name:
+                        print("QK fusion of K.weight:", old_name, old_param.shape)
+                        gated_attention.qk_proj.weight.data[len(old_param) :, :] = old_param.data
                         print(gated_attention.qk_proj.weight.data.shape)
-                    elif 'bias' in old_name:
-                        print('QK fusion of K.bias:', old_name, old_param.shape)
-                        gated_attention.qk_proj.bias.data[len(old_param):] = old_param.data
+                    elif "bias" in old_name:
+                        print("QK fusion of K.bias:", old_name, old_param.shape)
+                        gated_attention.qk_proj.bias.data[len(old_param) :] = old_param.data
                         print(gated_attention.qk_proj.bias.data.shape)
                     else:
                         raise ValueError(f"[Err] Where to place: {old_name}")
@@ -223,20 +228,18 @@ def qk_fuse(model):
 
                 if not found:
                     raise ValueError(f"No new parameter found with name {old_name}...")
-                
+
             dtype, device = m.v_proj.weight.dtype, m.v_proj.weight.device
-            
+
             for param in gated_attention.parameters():
                 param.data = param.data.type(dtype)
-            
+
             to_replace[n] = gated_attention
-            
 
     # actual replacement
     for n, p in to_replace.items():
         subm = model
-        for subn in n.split('.')[:-1]:
+        for subn in n.split(".")[:-1]:
             subm = getattr(subm, subn)
-        setattr(subm, n.split('.')[-1], p)
-        print(f'replaced {n}')
-
+        setattr(subm, n.split(".")[-1], p)
+        print(f"replaced {n}")

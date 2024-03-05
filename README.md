@@ -122,7 +122,7 @@ The codebase is designed to be easily extendable to other curvature estimates an
 | `surgeon.py` | Main script |
 | `sparsify.py` | General outer loop to prune large language model. |
 | `curvature.py` | Contains curvature types inheriting `Curvature` class. |
-| `pruner.py` | Contains computation of losses $\mathcal{L}$ and weight updates $\Delta \vtheta$ from curvatures. |
+| `pruner.py` | Contains computation of losses and weight updates from curvatures. |
 | `threshold.py` | Efficient implementation to compute global threshold from local layer-wise losses to match target sparsity level. Takes into account overlap between rows and columns and layer sizes. |
 | `eval.py` | Code for evaluation pass |
 | `lora.py` | Code for LoRA finetuning |
