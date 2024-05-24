@@ -135,11 +135,11 @@ The codebase is designed to be easily extendable to other curvature estimates an
 If you found this code useful, please be sure to cite:
 
 ```
-@article{van2023llm,
-  title={The LLM Surgeon},
-  author={van der Ouderaa, Tycho FA and Nagel, Markus and van Baalen, Mart and Asano, Yuki M and Blankevoort, Tijmen},
-  journal={arXiv preprint arXiv:2312.17244},
-  year={2023}
+@inproceedings{van2023llm,
+ title={The LLM Surgeon},
+ author={van der Ouderaa, Tycho FA and Nagel, Markus and van Baalen, Mart and Asano, Yuki M and Blankevoort, Tijmen},
+ booktitle={International Conference of Learning Representations (ICLR)},
+ year={2024}
 }
 ```
 
